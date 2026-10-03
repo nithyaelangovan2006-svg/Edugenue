@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EduGenie - AI learning assistant</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main>
+  <h1>EduGenie</h1>
+  <p class="tagline">Ask, understand, practise and plan your learning.</p>
+
+  <div class="tabs" role="tablist" id="tabs"></div>
+
+  <form id="taskForm">
+    <label for="input" id="inputLabel"></label>
+    <textarea id="input" required></textarea>
+    <button class="submit" type="submit" id="submitBtn"></button>
+  </form>
+
+  <div id="result" aria-live="polite"></div>
+</main>
+
+<script>
+const TASKS = {
+  qa:      { tab: "Ask a question",   label: "Your question",              ph: "Which is the largest ocean?",       btn: "Get answer" },
+  explain: { tab: "Explain a topic",  label: "Topic to explain",           ph: "Photosynthesis",                    btn: "Explain" },
+  quiz:    { tab: "Take a quiz",      label: "Topic or passage",           ph: "The Pythagoras theorem",            btn: "Generate quiz" },
+  summary: { tab: "Summarize text",   label: "Text to summarize",          ph: "Paste a long paragraph here",       btn: "Summarize" },
+  path:    { tab: "Learning path",    label: "What do you want to learn?", ph: "SQL",                               btn: "Build my path" },
+};
+let current = "qa";
+const $ = (id) => document.getElementById(id);
+
+function renderTabs() {
+  $("tabs").innerHTML = "";
+  Object.entries(TASKS).forEach(([key, t]) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.role = "tab"; b.textContent = t.tab;
+    b.setAttribute("aria-selected", key === current);
+    b.onclick = () => { current = key; $("result").innerHTML = ""; renderTabs(); renderForm(); };
+    $("tabs").appendChild(b);
+  });
+}
+function renderForm() {
+  const t = TASKS[current];
+  $("inputLabel").textContent = t.label;
+  $("input").placeholder = t.ph;
+  $("submitBtn").textContent = t.btn;
+}
+
+function panel(title, node, isError) {
+  const d = document.createElement("div");
+  d.className = "panel" + (isError ? " error" : "");
+  if (title) { const h = document.createElement("h2"); h.textContent = title; d.appendChild(h); }
+  d.appendChild(node);
+  $("result").innerHTML = ""; $("result").appendChild(d);
+}
+function textNode(text) { const p = document.createElement("p"); p.textContent = text; return p; }
+
+// Small safe Markdown renderer (headings, bold, bullets, paragraphs)
+function markdown(src) {
+  const box = document.createElement("div");
+  let list = null;
+  const inline = (el, text) => {
+    text.split(/(\*\*[^*]+\*\*)/).forEach((part) => {
+      if (part.startsWith("**") && part.endsWith("**")) {
+        const s = document.createElement("strong"); s.textContent = part.slice(2, -2); el.appendChild(s);
+      } else el.appendChild(document.createTextNode(part));
+    });
+  };
+  src.split("\n").forEach((raw) => {
+    const line = raw.trimEnd();
+    const bullet = line.match(/^(\s*)[*-]\s+(.*)/);
+    if (bullet) {
+      if (!list) { list = document.createElement("ul"); box.appendChild(list); }
+      const li = document.createElement("li");
+      li.style.marginLeft = Math.floor(bullet[1].length / 2) * 14 + "px";
+      inline(li, bullet[2]); list.appendChild(li); return;
+    }
+    list = null;
+    if (!line.trim()) return;
+    const h = line.match(/^(#{1,6})\s+(.*)/);
+    const el = document.createElement(h ? "h3" : "p");
+    inline(el, h ? h[2] : line); box.appendChild(el);
+  });
+  return box;
+}
+
+function quizView(quiz) {
+  const box = document.createElement("div");
+  quiz.forEach((q, i) => {
+    const wrap = document.createElement("div"); wrap.className = "q";
+    const title = document.createElement("strong"); title.textContent = `Q${i + 1}. ${q.question}`;
+    wrap.appendChild(title);
+    q.options.forEach((opt) => {
+      const l = document.createElement("label"); l.className = "opt";
+      const r = document.createElement("input"); r.type = "radio"; r.name = "q" + i; r.value = opt;
+      l.append(r, document.createTextNode(opt)); wrap.appendChild(l);
+    });
+    const btn = document.createElement("button"); btn.type = "button"; btn.className = "check"; btn.textContent = "Check answer";
+    const fb = document.createElement("div"); fb.className = "feedback";
+    btn.onclick = () => {
+      const picked = wrap.querySelector("input:checked");
+      if (!picked) { fb.className = "feedback"; fb.textContent = "Pick an option first."; return; }
+      const ok = picked.value === q.answer;
+      fb.className = "feedback " + (ok ? "good" : "bad");
+      fb.textContent = ok ? "Correct!" : `Incorrect. Correct answer: ${q.answer}`;
+    };
+    wrap.append(btn, fb); box.appendChild(wrap);
+  });
+  return box;
+}
+
+async function call(url, options) {
+  const res = await fetch(url, options);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || data.detail || "Request failed");
+  return data;
+}
+const post = (url, body) => call(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+$("taskForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const value = $("input").value.trim();
+  if (!value) return;
+  const btn = $("submitBtn"); btn.disabled = true;
+  const status = textNode("Working on it..."); status.className = "status";
+  $("result").innerHTML = ""; $("result").appendChild(status);
+  try {
+    const q = encodeURIComponent(value);
+    if (current === "qa") { const d = await call(`/qa?question=${q}`); panel("Answer", markdown(d.answer)); }
+    if (current === "explain") { const d = await post("/explain/", { topic: value }); panel("Explanation", markdown(d.explanation)); }
+    if (current === "summary") { const d = await post("/summarize/", { text: value }); panel("Summary", markdown(d.summary)); }
+    if (current === "quiz") { const d = await post("/quiz", { text: value }); panel("Quiz", quizView(d.quiz)); }
+    if (current === "path") { const d = await call(`/learn/recommendations?topic=${q}`); panel(`Learning path for "${value}"`, markdown(d.recommendation)); }
+  } catch (err) {
+    panel("Something went wrong", textNode(err.message), true);
+  } finally { btn.disabled = false; }
+});
+
+renderTabs(); renderForm();
+</script>
+</body>
+</html>
